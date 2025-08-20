@@ -13,167 +13,86 @@ app.get('/', (req, res) => {
   res.sendFile(__dirname + '/views/index.html')
 });
 
-const userExerciseSchema = new mongoose.Schema({
-  username: String,
-  log: [{
-    description: String,
-    duration: Number,
-    date: Date
+// Schemas
+const userSchema = new mongoose.Schema({
+  username: { type: String, required: true }
+});
+
+const exerciseSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  description: String,
+  duration: Number,
+  date: Date
+});
+
+const User = mongoose.model('User', userSchema);
+const Exercise = mongoose.model('Exercise', exerciseSchema);
+
+// Routes
+app.post('/api/users', async (req, res) => {
+  const user = new User({ username: req.body.username });
+  await user.save();
+  res.json({ username: user.username, _id: user._id });
+});
+
+app.get('/api/users', async (req, res) => {
+  const users = await User.find({});
+  res.json(users);
+});
+
+app.post('/api/users/:_id/exercises', async (req, res) => {
+  const { description, duration, date } = req.body;
+  const user = await User.findById(req.params._id);
+  if (!user) return res.status(404).send('User not found');
+
+  const exercise = new Exercise({
+    userId: user._id,
+    description,
+    duration: parseInt(duration),
+    date: date ? new Date(date) : new Date()
+  });
+
+  await exercise.save();
+
+  res.json({
+    _id: user._id,
+    username: user.username,
+    date: exercise.date.toDateString(),
+    duration: exercise.duration,
+    description: exercise.description
+  });
+});
+
+app.get('/api/users/:_id/logs', async (req, res) => {
+  const { from, to, limit } = req.query;
+  const user = await User.findById(req.params._id);
+  if (!user) return res.status(404).send('User not found');
+
+  let filter = { userId: user._id };
+  if (from || to) {
+    filter.date = {};
+    if (from) filter.date.$gte = new Date(from).toDateString();
+    if (to) filter.date.$lte = new Date(to).toDateString();
   }
-  ]
-})
 
-const UserExercise = mongoose.model('UserExercise', userExerciseSchema);
+  let query = Exercise.find(filter);
+  if (limit) query = query.limit(parseInt(limit));
 
+  const exercises = await query.exec();
 
-app.get('/api/users', async function (req, res) {
-  try {
-    let data = await UserExercise.aggregate([
-      {
-        $project: {
-          _id: 1,
-          username: 1,
-          __v: 1
-        }
-      }
-    ])
-    // data.forEach(m => m.username )
-    res.json(data)
-  } catch (error) {
-    res.json({ error: `Data tidak ditemukan ${error}` })
-  }
-})
+ const log = exercises.map(e => ({
+  description: e.description,
+  duration: e.duration,
+  date: new Date(e.date).toDateString()
+}));
 
-app.post('/api/users', async function (req, res) {
-  // console.log("you try to add the user data")
-  // res.json({status: req.body.username});
-  try {
-    let data = await UserExercise({ username: req.body.username })
-    data.save()
-    res.json({
-      username: data.username,
-      _id: data._id
-    });
-  } catch (error) {
-    res.json({ error: `Your data cannot be saved: ${error}` })
-  }
-})
-
-app.post('/api/users/:_id/exercises', async function (req, res) {
-  let id = req.params._id;
-  let description = req.body.description;
-  let duration = Number(req.body.duration);
-  let date = new Date(req.body.date);
-  let newLog = {
-    description: description,
-    duration: duration,
-    date: date
-  }
-  try {
-    let data = await UserExercise.findByIdAndUpdate(id,
-      { $push: { log: newLog } },
-      { new: true, useFindAndModify: false }
-    )
-
-    // Get the newly added log entry (last item in the array)
-    const addedLog = data.log[data.log.length - 1];
-
-    // Format the date
-    const formattedDate = new Date(addedLog.date).toDateString();
-
-    // Build the response
-    res.json({
-      username: data.username,
-      description: addedLog.description,
-      duration: addedLog.duration,
-      date: formattedDate,
-      _id: addedLog._id
-    });
-  } catch (error) {
-    res.json({ error: `Your data cannot be updated: ${error}` })
-  }
-})
-app.get('/api/users/:_id/logs', async function (req, res) {
-  let id = req.params._id;
-  let from = new Date(req.query.from);
-  let to = new Date(req.query.to);
-  let limit = parseInt(req.query.limit) || 10;
-  try {
-    let data = await UserExercise.aggregate([
-      {
-        $match: { _id: new mongoose.Types.ObjectId("68a3d3558d53e26c6793d7c2") }
-      },
-      {
-        $project: {
-          username: 1,
-          from: 1,
-          to: 1,
-          count: {
-            $size: {
-              $filter: {
-                input: "$log",
-                as: "entry",
-                cond: {
-                  $and: [
-                    { $gte: ["$$entry.date", from] },
-                    { $lte: ["$$entry.date", to] }
-                  ]
-                }
-              }
-            }
-          },
-          log: {
-            $map: {
-              input: {
-                $slice: [
-                  {
-                    $filter: {
-                      input: "$log",
-                      as: "entry",
-                      cond: {
-                        $and: [
-                          { $gte: ["$$entry.date", from] },
-                          { $lte: ["$$entry.date", to] }
-                        ]
-                      }
-                    },
-                  },
-                  limit
-                ]
-              },
-              as: "entry",
-              in: {
-                description: "$$entry.description",
-                duration: "$$entry.duration",
-                date: {
-                        $dateToString: {
-                          format: "%Y-%m-%d", // e.g., "Sat Aug 16 2025"
-                          date: "$$entry.date",
-                          timezone: "Asia/Jakarta" // optional, for local time
-                        }
-                      }
-                // intentionally omitting $$entry._id
-              }
-            }
-          }
-        }
-      }
-
-    ]);
-
-    let formatData = {
-      _id: id,
-      username: data[0].username,
-      from: new Date(from).toDateString(),
-      to: new Date(to).toDateString(),
-      count: data[0].count,
-      log: data[0].log
-    }
-    res.json(formatData)
-  } catch (error) {
-    res.json({ error: `Your cannot logged the data: ${error}` })
-  }
-})
+  res.json({
+    username: user.username,
+    count: log.length,
+    _id: user._id,
+    log
+  });
+});
 
 const listener = app.listen(process.env.PORT || 3000, () => {
   console.log('Your app is listening on port ' + listener.address().port)
